@@ -2,110 +2,127 @@ package minesweeperImportantPackages.model;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-import minesweeperImportantPackages.exception.ExplosionException;
+public class Board implements FieldObserver {
 
-public class Board {
+	private final int rows;
+	private final int columns;
+	private final int mines;
 
-	private int liNes;
-	private int coluMns;
-	private int mines;
+	private final List<Field> fields = new ArrayList<>();
+	private final List<Consumer<ResultEvent>> observers = new ArrayList<>();
 
-	private final List<Camp> camps = new ArrayList<>();
+	private boolean gameOver = false; 
 
-	public Board(int liNes, int coluMns, int mines) {
-		this.liNes = liNes;
-		this.coluMns = coluMns;
+	public Board(int rows, int columns, int mines) {
+		this.rows = rows;
+		this.columns = columns;
 		this.mines = mines;
-		generateCamps();
-		associatingNeighbors();
-		toRandomlyPlaceMines();
+
+		generateFields();
+		associateNeighbors();
+		randomizeMines();
 	}
 
-	public void opening(int liNe, int coluMn) {
-		try {
-			camps.parallelStream().filter(caMp -> caMp.getLiNe() == liNe && caMp.getColuMn() == coluMn).findFirst()
-					.ifPresent(caMp -> caMp.toOpen());
-		} catch (ExplosionException e) {
-			camps.forEach(c -> c.setOpen(true));
-			throw e;
-		}
+	public void forEachField(Consumer<Field> function) {
+		fields.forEach(function);
 	}
 
-	public void changingMark(int liNe, int coluMn) {
-		camps.parallelStream().filter(caMp -> caMp.getLiNe() == liNe && caMp.getColuMn() == coluMn).findFirst()
-				.ifPresent(caMp -> caMp.toggleMarking());
-
+	public void registerObserver(Consumer<ResultEvent> observer) {
+		observers.add(observer);
 	}
 
-	private void generateCamps() {
-		for (int line = 0; line < liNes; line++) {
-			for (int column = 0; column < coluMns; column++) {
-				camps.add(new Camp(line, column));
+	private void notifyObservers(boolean result) {
+		observers.stream().forEach(o -> o.accept(new ResultEvent(result)));
+	}
+
+	public void open(int row, int column) {
+		if (gameOver)
+			return;
+
+		fields.parallelStream().filter(f -> f.getRow() == row && f.getColumn() == column).findFirst()
+				.ifPresent(f -> f.open());
+	}
+
+	public void toggleMark(int row, int column) {
+		if (gameOver)
+			return;
+
+		fields.parallelStream().filter(f -> f.getRow() == row && f.getColumn() == column).findFirst()
+				.ifPresent(f -> f.toggleMark());
+	}
+
+	private void generateFields() {
+		for (int row = 0; row < rows; row++) {
+			for (int column = 0; column < columns; column++) {
+				Field field = new Field(row, column);
+				field.registerObserver(this);
+				fields.add(field);
 			}
 		}
 	}
 
-	private void associatingNeighbors() {
-		for (Camp c1 : camps) {
-			for (Camp c2 : camps) {
-				if (c1 != c2 && c1.addNeighbors(c2))
-					;
+	private void associateNeighbors() {
+		for (Field f1 : fields) {
+			for (Field f2 : fields) {
+				f1.addNeighbor(f2);
 			}
 		}
-
 	}
 
-	private void toRandomlyPlaceMines() {
-		long armedMines = 0;
-		Predicate<Camp> mined = cAmp -> cAmp.isMined();
+	private void randomizeMines() {
+		long minesCount = 0;
+		Predicate<Field> mined = f -> f.isMined();
 
-		while (armedMines < mines) {
-			int raMdom = (int) (Math.random() * camps.size());
-			Camp selectedCamp = camps.get(raMdom);
-
-			if (!selectedCamp.isMined()) {
-				selectedCamp.toMine();
-				armedMines++;
-			}
-		}
+		do {
+			int random = (int) (Math.random() * fields.size());
+			fields.get(random).mine();
+			minesCount = fields.stream().filter(mined).count();
+		} while (minesCount < mines);
 	}
 
 	public boolean goalAchieved() {
-		return camps.stream().allMatch(allGoal -> allGoal.goalAchieved());
+		return fields.stream().allMatch(f -> f.goalAchieved());
 	}
 
-	public void reStart() {
-		camps.stream().forEach(init -> init.restart());
-		toRandomlyPlaceMines();
+	public void restart() {
+		if (!gameOver)
+			return;
+
+		fields.stream().forEach(f -> f.restart());
+		randomizeMines();
+		gameOver = false; 
 	}
 
-	public String toString() {
-		StringBuilder sb = new StringBuilder();
-
-		sb.append("  ");
-		for (int c = 0; c < coluMns; c++) {
-			sb.append(" ");
-			sb.append(c);
-			sb.append(" ");
-		}
-		sb.append("\n");
-
-		int i = 0;
-		for (int l = 0; l < liNes; l++) {
-			sb.append(l);
-			sb.append(" ");
-			for (int c = 0; c < coluMns; c++) {
-				sb.append(" ");
-				sb.append(camps.get(i));
-				sb.append(" ");
-				i++;
-			}
-			sb.append("\n");
-		}
-
-		return sb.toString();
+	public int getRows() {
+		return rows;
 	}
 
+	public int getColumns() {
+		return columns;
+	}
+
+	@Override
+	public void eventOccurred(Field field, FieldEvent event) {
+	    if (gameOver) {
+	        return;
+	    }
+
+	    if (event == FieldEvent.EXPLODE) {
+	        revealMines();
+	        notifyObservers(false); 
+	        gameOver = true; 
+	        return;
+	    }
+
+	    if (goalAchieved() && !gameOver) {
+	        notifyObservers(true); 
+	        gameOver = true; 
+	    }
+	}
+	private void revealMines() {
+		fields.stream().filter(f -> f.isMined()).filter(f -> !f.isMarked()).forEach(f -> f.setOpened(true));
+	}
 }
